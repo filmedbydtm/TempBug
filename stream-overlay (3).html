@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stream Location Overlay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --ink: #f4f7f5;
+    --muted: #b7c4bf;
+    --panel: rgba(14, 24, 28, 0.82);
+    --accent: #3fd0c9;
+    --red: #ff4d4d;
+  }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: transparent; /* keep transparent for streaming software */
+    overflow: hidden;
+    font-family: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink);
+  }
+  .overlay {
+    position: absolute;
+    left: 30px;
+    top: 30px;
+    box-sizing: border-box;
+    height: 96px;          /* total box stays under 100px tall */
+    max-height: 100px;
+    overflow: hidden;
+    display: flex;
+    align-items: stretch;
+    background: var(--panel);
+    border-left: 8px solid var(--accent);
+    border-radius: 4px 14px 14px 4px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.35);
+    animation: slide-in .9s cubic-bezier(.2,.8,.2,1) both;
+  }
+  .place {
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 0 26px 0 20px;
+  }
+  .city { font-size: 40px; font-weight: 700; line-height: 1; white-space: nowrap; }
+  .hood {
+    margin-top: 6px;
+    font-size: 22px; font-weight: 500; line-height: 1;
+    color: var(--red); white-space: nowrap;
+  }
+  .temp {
+    display: flex; flex-direction: row; align-items: center; gap: 14px;
+    padding: 0 22px 0 24px;
+    border-left: 2px solid rgba(255,255,255,.15);
+  }
+  .temps { display: flex; flex-direction: column; justify-content: center; }
+  .icon { width: 56px; height: 56px; flex: none; }
+  .icon svg { width: 100%; height: 100%; display: block; }
+  .f { font-size: 38px; font-weight: 700; line-height: 1; }
+  .c { font-size: 24px; font-weight: 500; line-height: 1; color: var(--muted); margin-top: 4px; }
+  @keyframes slide-in {
+    from { transform: translateX(-40px); opacity: 0; }
+    to   { transform: none; opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) { .overlay { animation: none; } }
+</style>
+</head>
+<body>
+<div class="overlay" id="overlay">
+  <div class="place">
+    <div class="city" id="city"></div>
+    <div class="hood" id="hood"></div>
+  </div>
+  <div class="temp">
+    <div class="temps">
+      <div class="f" id="f">--°F</div>
+      <div class="c" id="c">--°C</div>
+    </div>
+    <div class="icon" id="icon"></div>
+  </div>
+</div>
+
+<script>
+  /* ===== EDIT THESE ===== */
+  const CONFIG = {
+    // Fallback location, shown until the first GPS fix (or if GPS is unavailable)
+    neighborhood: "Your Neighborhood",
+    city: "Your City",
+    state: "Your State",
+    latitude: 42.3314,
+    longitude: -83.0458,
+    refreshSeconds: 60     // how often to re-check GPS, location name, and temperature
+  };
+  /* ====================== */
+
+  // URL overrides, e.g. overlay.html?gps=off
+  const q = new URLSearchParams(location.search);
+  const useGps = q.get("gps") !== "off";
+  const state = {
+    hood: q.get("hood") || CONFIG.neighborhood,
+    city: q.get("city") || CONFIG.city,
+    state: q.get("state") || CONFIG.state,
+    lat: parseFloat(q.get("lat")) || CONFIG.latitude,
+    lon: parseFloat(q.get("lon")) || CONFIG.longitude
+  };
+
+  const $ = id => document.getElementById(id);
+  function render() {
+    $("hood").textContent = state.hood;
+    $("city").textContent = state.city + (state.state ? ", " + state.state : "");
+  }
+  render();
+
+  // Weather icons (inline SVG, 48x48)
+  const CLOUD = '<g fill="#dfe7ea"><circle cx="17" cy="26" r="7"/><circle cx="27" cy="21" r="9"/><circle cx="36" cy="27" r="6"/><rect x="13" y="26" width="28" height="7" rx="3.5"/></g>';
+  const SUN = (x, y, r) => '<g stroke="#ffc83d" stroke-width="3" stroke-linecap="round"><circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="#ffc83d"/>' +
+    [0,45,90,135,180,225,270,315].map(d => '<line x1="' + x + '" y1="' + (y - r - 4) + '" x2="' + x + '" y2="' + (y - r - 8) + '" transform="rotate(' + d + ' ' + x + ' ' + y + ')"/>').join('') + '</g>';
+  const ICONS = {
+    clearDay: SUN(24, 24, 8),
+    clearNight: '<path d="M30 8a16 16 0 1 0 10 28A13 13 0 0 1 30 8z" fill="#f2e6a8"/>',
+    partly: SUN(17, 17, 6) + CLOUD,
+    cloud: CLOUD,
+    fog: '<g stroke="#b7c4bf" stroke-width="3.5" stroke-linecap="round"><line x1="8" y1="16" x2="40" y2="16"/><line x1="12" y1="24" x2="44" y2="24"/><line x1="8" y1="32" x2="40" y2="32"/></g>',
+    rain: CLOUD + '<g stroke="#5db4ff" stroke-width="3" stroke-linecap="round"><line x1="18" y1="37" x2="16" y2="44"/><line x1="26" y1="37" x2="24" y2="44"/><line x1="34" y1="37" x2="32" y2="44"/></g>',
+    snow: CLOUD + '<g fill="#ffffff"><circle cx="18" cy="40" r="2.5"/><circle cx="26" cy="43" r="2.5"/><circle cx="34" cy="40" r="2.5"/></g>',
+    storm: CLOUD + '<polygon points="26,34 20,43 25,43 22,50 32,40 27,40 30,34" fill="#ffc83d"/>'
+  };
+  function iconFor(code, isDay) {
+    if (code <= 1) return isDay ? ICONS.clearDay : ICONS.clearNight;
+    if (code === 2) return ICONS.partly;
+    if (code === 3) return ICONS.cloud;
+    if (code === 45 || code === 48) return ICONS.fog;
+    if (code >= 95) return ICONS.storm;
+    if ((code >= 71 && code <= 77) || code === 85 || code === 86) return ICONS.snow;
+    return ICONS.rain; // drizzle, rain, freezing rain, showers
+  }
+
+  function getPosition() {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) return reject(new Error("Geolocation not supported"));
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true, maximumAge: 0, timeout: 20000
+      });
+    });
+  }
+
+  async function updateLocationName() {
+    try {
+      const url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=16&addressdetails=1" +
+        "&lat=" + state.lat + "&lon=" + state.lon;
+      const res = await fetch(url, { headers: { "Accept-Language": "en" } });
+      const a = (await res.json()).address || {};
+      state.hood = a.neighbourhood || a.suburb || a.quarter || a.city_district || a.hamlet || state.hood;
+      state.city = a.city || a.town || a.village || a.municipality || a.county || state.city;
+      state.state = a.state || state.state;
+      render();
+    } catch (e) {
+      console.error("Place lookup failed:", e);
+    }
+  }
+
+  async function updateTemp() {
+    try {
+      const url = "https://api.open-meteo.com/v1/forecast?latitude=" + state.lat +
+        "&longitude=" + state.lon + "&current=temperature_2m,weather_code,is_day&temperature_unit=celsius";
+      const data = await (await fetch(url)).json();
+      const c = data.current.temperature_2m;
+      $("f").textContent = Math.round(c * 9 / 5 + 32) + "\u00B0F";
+      $("c").textContent = Math.round(c) + "\u00B0C";
+      $("icon").innerHTML = '<svg viewBox="0 0 48 48" aria-hidden="true">' +
+        iconFor(data.current.weather_code, data.current.is_day === 1) + '</svg>';
+    } catch (e) {
+      console.error("Weather update failed:", e);
+    }
+  }
+
+  async function tick() {
+    if (useGps) {
+      try {
+        const pos = await getPosition();
+        state.lat = pos.coords.latitude;
+        state.lon = pos.coords.longitude;
+        await updateLocationName();
+      } catch (e) {
+        // No GPS fix: keep the last known (or fallback) location
+        console.error("GPS unavailable:", e.message);
+      }
+    }
+    updateTemp();
+  }
+
+  tick();
+  setInterval(tick, CONFIG.refreshSeconds * 1000);
+</script>
+</body>
+</html>
