@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GPS Collector</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#10181c; --ink:#f4f7f5; --muted:#9fb0aa; --line:#27363c; --go:#2fbf71; --stop:#e5484d; --accent:#3fd0c9; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
+  main { max-width: 480px; margin: 0 auto; padding: 24px 20px 40px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 22px; color: var(--muted); font-size: 15px; line-height: 1.4; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 12px; cursor: pointer; }
+  #toggle { width: 100%; padding: 22px; font-size: 20px; color: #fff; background: var(--go); }
+  #toggle.on { background: var(--stop); }
+  #toggle:focus-visible, .copy:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .card { margin-top: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
+  .card h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+  .row { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; padding: 10px; font: inherit; font-size: 13px; color: var(--ink); background: #0b1114; border: 1px solid var(--line); border-radius: 8px; }
+  .copy { padding: 10px 14px; color: #06201f; background: var(--accent); }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 15px; }
+  dt { color: var(--muted); } dd { margin: 0; text-align: right; }
+  #msg { margin-top: 12px; font-size: 14px; color: #ffb3b5; min-height: 1.2em; }
+  .note { margin-top: 18px; font-size: 13px; line-height: 1.45; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>GPS collector</h1>
+  <p class="sub">Open this page on your phone. Tap Start and keep the screen on while you stream.</p>
+
+  <button id="toggle" type="button">Start sharing location</button>
+  <div id="msg" role="status"></div>
+
+  <div class="card">
+    <h2>Link for the display page</h2>
+    <div class="row">
+      <input id="link" readonly aria-label="Display page link">
+      <button class="copy" id="copy" type="button">Copy</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Status</h2>
+    <dl>
+      <dt>Sharing</dt><dd id="s-state">Off</dd>
+      <dt>Last sent</dt><dd id="s-time">Never</dd>
+      <dt>Coordinates</dt><dd id="s-pos">--</dd>
+      <dt>Accuracy</dt><dd id="s-acc">--</dd>
+      <dt>Updates sent</dt><dd id="s-count">0</dd>
+    </dl>
+  </div>
+
+  <p class="note">Your coordinates are sent to a public relay (ntfy.sh). Only someone with the code in the link can read them, so don&rsquo;t post that link publicly. Stop sharing when you&rsquo;re done.</p>
+</main>
+
+<script>
+  /* ===== EDIT THESE ===== */
+  const CONFIG = {
+    relay: "https://ntfy.sh",   // must match the relay in overlay-display.html
+    checkSeconds: 60,           // how often to read GPS
+    minMoveMeters: 50,          // only send if you moved at least this far...
+    heartbeatMinutes: 10        // ...or if this long has passed since the last send
+  };
+  /* ====================== */
+
+  const $ = id => document.getElementById(id);
+
+  // A private code that pairs this page with the display page. Created once, then remembered.
+  function makeCode() {
+    const b = new Uint8Array(10); crypto.getRandomValues(b);
+    return "gps-" + Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  }
+  let code = (new URLSearchParams(location.search).get("code") || "").replace(/[^A-Za-z0-9_-]/g, "");
+  try {
+    if (!code) code = localStorage.getItem("overlayCode") || "";
+    if (!code) code = makeCode();
+    localStorage.setItem("overlayCode", code);
+  } catch (e) { if (!code) code = makeCode(); }
+  $("link").value = new URL("overlay-display.html?code=" + code, location.href).href;
+
+  $("copy").onclick = async () => {
+    try { await navigator.clipboard.writeText($("link").value); $("copy").textContent = "Copied"; }
+    catch (e) { $("link").select(); $("copy").textContent = "Select + copy"; }
+    setTimeout(() => $("copy").textContent = "Copy", 2000);
+  };
+
+  let timer = null, wakeLock = null, last = null, count = 0;
+
+  function meters(a, b) {
+    const R = 6371000, rad = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+    const h = Math.sin(dLat/2)**2 + Math.cos(a.lat*rad) * Math.cos(b.lat*rad) * Math.sin(dLon/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  function getPosition() {
+    return new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej,
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }));
+  }
+
+  async function sendOnce() {
+    try {
+      const pos = await getPosition();
+      const cur = { lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), t: Date.now() };
+      $("s-pos").textContent = cur.lat + ", " + cur.lon;
+      $("s-acc").textContent = Math.round(pos.coords.accuracy) + " m";
+      const due = !last || meters(last, cur) >= CONFIG.minMoveMeters ||
+                  cur.t - last.t >= CONFIG.heartbeatMinutes * 60000;
+      if (due) {
+        const res = await fetch(CONFIG.relay + "/" + code, { method: "POST", body: JSON.stringify(cur) });
+        if (!res.ok) throw new Error("Relay returned " + res.status);
+        last = cur; count++;
+        $("s-count").textContent = count;
+        $("s-time").textContent = new Date().toLocaleTimeString();
+      }
+      $("msg").textContent = "";
+    } catch (e) {
+      $("msg").textContent = e && e.code === 1
+        ? "Location permission was denied. Allow location for this page in your browser settings, then tap Start again."
+        : "Couldn\u2019t send an update (" + (e.message || "GPS or network problem") + "). Trying again in a minute.";
+    }
+  }
+
+  async function start() {
+    if (!navigator.geolocation) { $("msg").textContent = "This browser doesn\u2019t support GPS."; return; }
+    $("toggle").textContent = "Stop sharing"; $("toggle").classList.add("on");
+    $("s-state").textContent = "On";
+    try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e) { /* optional */ }
+    sendOnce();
+    timer = setInterval(sendOnce, CONFIG.checkSeconds * 1000);
+  }
+  function stop() {
+    clearInterval(timer); timer = null; last = null;
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+    $("toggle").textContent = "Start sharing location"; $("toggle").classList.remove("on");
+    $("s-state").textContent = "Off";
+  }
+  $("toggle").onclick = () => timer ? stop() : start();
+
+  // The screen lock is released when the tab is hidden; take it again when you come back.
+  document.addEventListener("visibilitychange", async () => {
+    if (timer && document.visibilityState === "visible") {
+      try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+    }
+  });
+</script>
+</body>
+</html>
